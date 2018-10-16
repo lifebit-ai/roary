@@ -19,19 +19,16 @@ def helpMessage() {
 
     The typical command for running the pipeline is as follows:
 
-    nextflow run nf-core/roary --reads '*_R{1,2}.fastq.gz' -profile standard,docker
+    nextflow run nf-core/roary --fasta_folder EColiDir -profile standard,docker
 
     Mandatory arguments:
-      --reads                       Path to input data (must be surrounded with quotes)
-      --genome                      Name of iGenomes reference
+      --fasta_folder                Path to folder containing nucleotide assembly fasta files from the same species
       -profile                      Configuration profile to use. Can use multiple (comma separated)
                                     Available: standard, conda, docker, singularity, awsbatch, test
 
     Options:
-      --singleEnd                   Specifies that the input is single end reads
 
     References                      If not specified in the configuration file or you wish to overwrite any of the references.
-      --fasta                       Path to Fasta reference
 
     Other options:
       --outdir                      The output directory where the results will be saved
@@ -55,31 +52,22 @@ if (params.help){
 }
 
 // Configurable variables
-params.name = false
-params.fasta = params.genome ? params.genomes[ params.genome ].fasta ?: false : false
-params.multiqc_config = "$baseDir/conf/multiqc_config.yaml"
-params.email = false
-params.plaintext_email = false
+fasta_path="${params.fasta_folder}/*.${params.fasta_extension}"
 
 multiqc_config = file(params.multiqc_config)
 output_docs = file("$baseDir/docs/output.md")
 
 // Validate inputs
-if ( params.fasta ){
-    fasta = file(params.fasta)
-    if( !fasta.exists() ) exit 1, "Fasta file not found: ${params.fasta}"
-}
+fasta_dataset = Channel
+  .fromPath( fasta_path )
+  .ifEmpty{exit 1, "Fasta files not found not found: ${fasta_path}"}
+  .map { file -> tuple(file.baseName, file) }
+
 // AWSBatch sanity checking
 if(workflow.profile == 'awsbatch'){
     if (!params.awsqueue || !params.awsregion) exit 1, "Specify correct --awsqueue and --awsregion parameters on AWSBatch!"
     if (!workflow.workDir.startsWith('s3') || !params.outdir.startsWith('s3')) exit 1, "Specify S3 URLs for workDir and outdir parameters on AWSBatch!"
 }
-//
-// NOTE - THIS IS NOT USED IN THIS PIPELINE, EXAMPLE ONLY
-// If you want to use the above in a process, define the following:
-//   input:
-//   file fasta from fasta
-//
 
 
 // Has the run name been specified by the user?
@@ -94,30 +82,6 @@ if( !(workflow.runName ==~ /[a-z]+_[a-z]+/) ){
 if( workflow.profile == 'awsbatch') {
     if(!workflow.workDir.startsWith('s3:') || !params.outdir.startsWith('s3:')) exit 1, "Workdir or Outdir not on S3 - specify S3 Buckets for each to run on AWSBatch!"
 }
-
-/*
- * Create a channel for input read files
- */
- if(params.readPaths){
-     if(params.singleEnd){
-         Channel
-             .from(params.readPaths)
-             .map { row -> [ row[0], [file(row[1][0])]] }
-             .ifEmpty { exit 1, "params.readPaths was empty - no input files supplied" }
-             .into { read_files_fastqc; read_files_trimming }
-     } else {
-         Channel
-             .from(params.readPaths)
-             .map { row -> [ row[0], [file(row[1][0]), file(row[1][1])]] }
-             .ifEmpty { exit 1, "params.readPaths was empty - no input files supplied" }
-             .into { read_files_fastqc; read_files_trimming }
-     }
- } else {
-     Channel
-         .fromFilePairs( params.reads, size: params.singleEnd ? 1 : 2 )
-         .ifEmpty { exit 1, "Cannot find any reads matching: ${params.reads}\nNB: Path needs to be enclosed in quotes!\nIf this is single-end data, please specify --singleEnd on the command line." }
-         .into { read_files_fastqc; read_files_trimming }
- }
 
 
 // Header log info
@@ -134,9 +98,7 @@ def summary = [:]
 summary['Pipeline Name']  = 'nf-core/roary'
 summary['Pipeline Version'] = workflow.manifest.version
 summary['Run Name']     = custom_runName ?: workflow.runName
-summary['Reads']        = params.reads
-summary['Fasta Ref']    = params.fasta
-summary['Data Type']    = params.singleEnd ? 'Single-End' : 'Paired-End'
+summary['Fasta files']  = fasta_path
 summary['Max Memory']   = params.max_memory
 summary['Max CPUs']     = params.max_cpus
 summary['Max Time']     = params.max_time
@@ -191,8 +153,7 @@ process get_software_versions {
     """
     echo $workflow.manifest.version > v_pipeline.txt
     echo $workflow.nextflow.version > v_nextflow.txt
-    fastqc --version > v_fastqc.txt
-    multiqc --version > v_multiqc.txt
+    #multiqc --version > v_multiqc.txt
     scrape_software_versions.py > software_versions_mqc.yaml
     """
 }
@@ -200,22 +161,29 @@ process get_software_versions {
 
 
 /*
- * STEP 1 - FastQC
+ * STEP 1 - Prokka - you but on a really good day
  */
-process fastqc {
-    tag "$name"
-    publishDir "${params.outdir}/fastqc", mode: 'copy',
-        saveAs: {filename -> filename.indexOf(".zip") > 0 ? "zips/$filename" : "$filename"}
+process prokka {
+    publishDir "${params.outdir}/prokka", mode: 'copy'
 
     input:
-    set val(name), file(reads) from read_files_fastqc
+    set fasta_prefix, file(fasta_file) from fasta_dataset
 
     output:
-    file "*_fastqc.{zip,html}" into fastqc_results
+    set file("${fasta_prefix}/${fasta_prefix}.err"),
+        file("${fasta_prefix}/${fasta_prefix}.ffn"),
+        file("${fasta_prefix}/${fasta_prefix}.fsa"),
+        file("${fasta_prefix}/${fasta_prefix}.log"),
+        file("${fasta_prefix}/${fasta_prefix}.tsv"),
+        file("${fasta_prefix}/${fasta_prefix}.faa"),
+        file("${fasta_prefix}/${fasta_prefix}.fna"),
+        file("${fasta_prefix}/${fasta_prefix}.gff"),
+        file("${fasta_prefix}/${fasta_prefix}.tbl"),
+        file("${fasta_prefix}/${fasta_prefix}.txt") into prokka
 
     script:
     """
-    fastqc -q $reads
+    prokka --kingdom $params.kingdom --outdir ${fasta_prefix} --prefix ${fasta_prefix} ${fasta_file}
     """
 }
 
@@ -229,7 +197,6 @@ process multiqc {
 
     input:
     file multiqc_config
-    file ('fastqc/*') from fastqc_results.collect()
     file ('software_versions/*') from software_versions_yaml
     file workflow_summary from create_workflow_summary(summary)
 
