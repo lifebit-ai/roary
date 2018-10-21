@@ -4,5 +4,6 @@ channels:
   - conda-forge
   - defaults
 dependencies:
-  - fastqc=0.11.7
   - multiqc=1.6
+  - prokka=1.13.3
+  - roary=3.12.0
