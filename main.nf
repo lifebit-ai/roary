@@ -153,7 +153,7 @@ process get_software_versions {
     """
     echo $workflow.manifest.version > v_pipeline.txt
     echo $workflow.nextflow.version > v_nextflow.txt
-    #multiqc --version > v_multiqc.txt
+    multiqc --version > v_multiqc.txt
     scrape_software_versions.py > software_versions_mqc.yaml
     """
 }
@@ -161,7 +161,7 @@ process get_software_versions {
 
 
 /*
- * STEP 1 - Prokka - you but on a really good day
+ * STEP 1 - Prokka - rapid prokaryotic genome annotation
  */
 process prokka {
     publishDir "${params.outdir}/prokka", mode: 'copy'
@@ -170,6 +170,7 @@ process prokka {
     set fasta_prefix, file(fasta_file) from fasta_dataset
 
     output:
+    file("${fasta_prefix}/${fasta_prefix}.gff") into gff
     set file("${fasta_prefix}/${fasta_prefix}.err"),
         file("${fasta_prefix}/${fasta_prefix}.ffn"),
         file("${fasta_prefix}/${fasta_prefix}.fsa"),
@@ -177,7 +178,6 @@ process prokka {
         file("${fasta_prefix}/${fasta_prefix}.tsv"),
         file("${fasta_prefix}/${fasta_prefix}.faa"),
         file("${fasta_prefix}/${fasta_prefix}.fna"),
-        file("${fasta_prefix}/${fasta_prefix}.gff"),
         file("${fasta_prefix}/${fasta_prefix}.tbl"),
         file("${fasta_prefix}/${fasta_prefix}.txt") into prokka
 
@@ -187,10 +187,28 @@ process prokka {
     """
 }
 
+/*
+ * STEP 2 - Roary - rapid large-scale prokaryote pan genome analysis
+ */
+process roary {
+    publishDir "${params.outdir}/roary", mode: 'copy'
+
+    input:
+    file gff from gff.collect()
+
+    output:
+    file("*") into roary
+    file("pan_genome_reference.fa") into pan_genome
+
+    script:
+    """
+    roary -e -n -v -r $gff
+    """
+}
 
 
 /*
- * STEP 2 - MultiQC
+ * STEP 3 - MultiQC
  */
 process multiqc {
     publishDir "${params.outdir}/MultiQC", mode: 'copy'
@@ -215,23 +233,23 @@ process multiqc {
 
 
 /*
- * STEP 3 - Output Description HTML
+ * STEP 4 - Output Description HTML
  */
-process output_documentation {
-    tag "$prefix"
-    publishDir "${params.outdir}/Documentation", mode: 'copy'
-
-    input:
-    file output_docs
-
-    output:
-    file "results_description.html"
-
-    script:
-    """
-    markdown_to_html.r $output_docs results_description.html
-    """
-}
+// process output_documentation {
+//     tag "$prefix"
+//     publishDir "${params.outdir}/Documentation", mode: 'copy'
+//
+//     input:
+//     file output_docs
+//
+//     output:
+//     file "results_description.html"
+//
+//     script:
+//     """
+//     markdown_to_html.r $output_docs results_description.html
+//     """
+// }
 
 
 
